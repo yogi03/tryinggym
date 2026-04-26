@@ -111,6 +111,8 @@ export const onMembershipUpdated = functions.firestore
 
       await batch.commit();
     }
+
+    return null;
   });
 
 export const onMemberDeleted = functions.firestore
