@@ -119,6 +119,13 @@ export async function POST(request: NextRequest, { params }: { params: { deviceT
   console.log(`[Biometric POST] body=${bodyText}`);
 
   try {
+    // TEMPORARY: Save the exact raw body to firestore so we can inspect it
+    await adminDb.collection("debug").doc("lastPost").set({
+      body: bodyText,
+      table: table || "null",
+      time: new Date(),
+    });
+
     const result = await findDevice(deviceToken);
     if (!result) {
       return new NextResponse("OK\n", { status: 200, headers: { "Content-Type": "text/plain" } });
