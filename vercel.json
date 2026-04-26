@@ -1,0 +1,12 @@
+{
+  "crons": [
+    {
+      "path": "/api/cron/membership-reminders",
+      "schedule": "30 3 * * *"
+    },
+    {
+      "path": "/api/cron/daily-wishes",
+      "schedule": "30 3 * * *"
+    }
+  ]
+}

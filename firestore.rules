@@ -1,0 +1,162 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function adminDoc() {
+      return get(/databases/$(database)/documents/admins/$(request.auth.uid));
+    }
+
+    function trainerDoc() {
+      return get(/databases/$(database)/documents/trainerAccounts/$(request.auth.uid));
+    }
+
+    function isDeveloper() {
+      return signedIn() &&
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid)) &&
+        adminDoc().data.role == "developer";
+    }
+
+    function belongsToGym(gymId) {
+      return signedIn() &&
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid)) &&
+        adminDoc().data.gymId == gymId;
+    }
+
+    function isTrainer() {
+      return signedIn() &&
+        exists(/databases/$(database)/documents/trainerAccounts/$(request.auth.uid)) &&
+        trainerDoc().data.role == "trainer";
+    }
+
+    function trainerBelongsToGym(gymId) {
+      return isTrainer() && trainerDoc().data.gymId == gymId;
+    }
+
+    function canTrainerReadStaff(gymId, staffId) {
+      return trainerBelongsToGym(gymId) && trainerDoc().data.staffId == staffId;
+    }
+
+    function isFrontDesk() {
+      return signedIn() && exists(/databases/$(database)/documents/frontDeskAccounts/$(request.auth.uid));
+    }
+
+    function frontDeskDoc() {
+      return get(/databases/$(database)/documents/frontDeskAccounts/$(request.auth.uid));
+    }
+
+    function frontDeskBelongsToGym(gymId) {
+      return isFrontDesk() && frontDeskDoc().data.gymId == gymId;
+    }
+
+    function canAccessGym(gymId) {
+      return isDeveloper() || belongsToGym(gymId) || frontDeskBelongsToGym(gymId);
+    }
+
+    function canTrainerReadMember(gymId) {
+      return trainerBelongsToGym(gymId) &&
+        resource.data.trainingType == "personal" &&
+        resource.data.personalTrainerId == trainerDoc().data.staffId;
+    }
+    
+    // Gyms: Public can read basic info, only admins can manage
+    match /gyms/{gymId} {
+      allow read: if true;
+      allow write: if false; // Managed via server actions/admin
+    }
+
+    // Admins: Access to their own admin profile
+    match /admins/{adminId} {
+      allow read: if signedIn() && (request.auth.uid == adminId || isDeveloper());
+      allow write: if false;
+    }
+
+    match /trainerAccounts/{trainerId} {
+      allow read: if signedIn() && request.auth.uid == trainerId;
+      allow write: if false;
+    }
+
+    match /frontDeskAccounts/{accountId} {
+      allow read: if signedIn() && request.auth.uid == accountId;
+      allow write: if false;
+    }
+
+    // Members: Nested under gyms
+    match /gyms/{gymId}/members/{memberId} {
+      // Anyone can register if they have the gym link
+      allow create: if true;
+      
+      // Admin of THIS gym can read/manage members
+      allow read, update, delete: if canAccessGym(gymId);
+      allow read: if canTrainerReadMember(gymId);
+        
+    // Also allow individual members to read their own data via email match
+      allow read: if signedIn() && request.auth.token.email == resource.data.email;
+    }
+
+    // Staff: Nested under gyms
+    match /gyms/{gymId}/staff/{staffId} {
+      allow read, write: if canAccessGym(gymId);
+      allow read: if canTrainerReadStaff(gymId, staffId);
+    }
+
+    // Payments: Nested under gyms
+    match /gyms/{gymId}/payments/{paymentId} {
+      allow read, write: if canAccessGym(gymId);
+    }
+
+    // Inquiries: Nested under gyms
+    match /gyms/{gymId}/inquiries/{inquiryId} {
+      allow read, write: if canAccessGym(gymId);
+    }
+
+    // Devices: Nested under gyms
+    match /gyms/{gymId}/devices/{deviceId} {
+      allow read: if canAccessGym(gymId);
+      allow write: if false;
+    }
+
+    // Device Commands: Nested under gyms
+    match /gyms/{gymId}/deviceCommands/{commandId} {
+      allow read, write: if canAccessGym(gymId);
+    }
+
+    // Attendance Logs: Nested under gyms
+    match /gyms/{gymId}/attendanceLogs/{logId} {
+      allow read: if canAccessGym(gymId);
+      allow write: if false;
+    }
+
+    // Archives: Gym-level archive doc
+    match /archives/{gymId} {
+      allow read: if canAccessGym(gymId);
+      allow create: if canAccessGym(gymId);
+      allow update, delete: if false;
+
+      // Archived members nested under gym
+      match /members/{memberId} {
+        allow read: if canAccessGym(gymId);
+        allow create: if canAccessGym(gymId);
+        allow update, delete: if canAccessGym(gymId);
+      }
+    }
+
+    // Users (Fitness Tracker Users)
+    match /users/{userId} {
+      allow read, write: if signedIn() && request.auth.uid == userId;
+    }
+
+    // Workouts: Users can only access their own records
+    match /workouts/{workoutId} {
+      allow create: if signedIn() && request.auth.uid == request.resource.data.userId;
+      allow read, update, delete: if signedIn() && request.auth.uid == resource.data.userId;
+    }
+
+    // Default deny for everything else
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

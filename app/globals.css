@@ -1,0 +1,55 @@
+@import "tw-animate-css";
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+}
+
+@layer base {
+  :root {
+    --background: #0e0e0e;
+    --foreground: #ffffff;
+    --card: #131313;
+    --card-foreground: #ffffff;
+    --popover: #131313;
+    --popover-foreground: #ffffff;
+    --primary: #B6916D;
+    --primary-foreground: #ffffff;
+    --secondary: #191919;
+    --secondary-foreground: #ffffff;
+    --muted: #191919;
+    --muted-foreground: #ababab;
+    --accent: #B6916D;
+    --accent-foreground: #ffffff;
+    --destructive: #ef4444;
+    --border: #262626;
+    --input: #262626;
+    --ring: #B6916D;
+    --radius: 0.5rem;
+  }
+}
+
+@layer utilities {
+  .font-poppins {
+    font-family: var(--font-poppins), sans-serif;
+  }
+  .font-grotesk {
+    font-family: var(--font-grotesk), sans-serif;
+  }
+  .text-shadow-neon {
+    text-shadow: 0 0 10px rgba(187, 43, 91, 0.5);
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring;
+  }
+  body {
+    @apply bg-background text-foreground font-poppins;
+  }
+}
