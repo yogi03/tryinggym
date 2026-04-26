@@ -14,12 +14,6 @@ async function findDevice(deviceToken: string) {
   return { gymId, deviceId, deviceDoc, gymRef: db.collection("gyms").doc(gymId) };
 }
 
-// Convert YYYY-MM-DD to YYYYMMDD (required by Realtime FkWeb protocol)
-function toDeviceDate(dateStr: string): string {
-  if (!dateStr) return "";
-  return dateStr.replace(/-/g, "");
-}
-
 export async function GET(request: NextRequest, { params }: { params: { deviceToken: string } }) {
   const { deviceToken } = params;
 
@@ -38,10 +32,8 @@ export async function GET(request: NextRequest, { params }: { params: { deviceTo
       const deviceData = deviceDoc.data()!;
       serialNo = deviceData.serialNo || "Unknown";
 
-      // Update lastSeen
       await deviceDoc.ref.update({ lastSeen: new Date() });
 
-      // Fetch pending commands for this specific device
       const commandsSnapshot = await deviceDoc.ref
         .collection("deviceCommands")
         .where("status", "==", "pending")
@@ -55,11 +47,12 @@ export async function GET(request: NextRequest, { params }: { params: { deviceTo
           const cmd = doc.data();
           const uniqueCmdId = `${Math.floor(Date.now() / 1000)}${String(cmdCounter++).padStart(4, "0")}`;
 
-          // PIN must be plain integer (no zero-padding) for Realtime FkWeb
+          // PIN: plain integer (device internally zero-pads to 8 digits, e.g. "1" → "00000001")
           const pin = parseInt(String(cmd.pin), 10);
-          // Dates must be YYYYMMDD format (no dashes)
-          const validFrom = toDeviceDate(cmd.validFrom || "");
-          const validTo = toDeviceDate(cmd.validTo || "");
+
+          // Dates: YYYY-MM-DD format WITH dashes (confirmed from device UI)
+          const validFrom = cmd.validFrom || "";
+          const validTo = cmd.validTo || "";
 
           if (cmd.type === "CREATE_USER") {
             commandsText += `C:${uniqueCmdId}:DATA UPDATE USERINFO PIN=${pin}\tName=${cmd.name || ""}\tPri=0\tValidFrom=${validFrom}\tValidTo=${validTo}\n`;
@@ -73,15 +66,14 @@ export async function GET(request: NextRequest, { params }: { params: { deviceTo
         });
 
         await cmdBatch.commit();
-        console.log(`[Biometric] Sent ${commandsSnapshot.size} commands to device ${serialNo}`);
-        console.log(`[Biometric] Commands:\n${commandsText}`);
+        console.log(`[Biometric GET] Sent ${commandsSnapshot.size} commands to device ${serialNo}`);
+        console.log(`[Biometric GET] Command payload:\n${commandsText}`);
       }
     }
   } catch (error) {
-    console.error(`Error in GET /api/biometric/${deviceToken}:`, error);
+    console.error(`[Biometric GET] Error for token ${deviceToken}:`, error);
   }
 
-  // Response format: options first, then commands
   const responseLines = [
     `GET OPTION FROM: ${serialNo}`,
     `ATTLOGStamp=None`,
@@ -108,22 +100,26 @@ export async function GET(request: NextRequest, { params }: { params: { deviceTo
 }
 
 export async function POST(request: NextRequest, { params }: { params: { deviceToken: string } }) {
-  const { searchParams } = new URL(request.url);
+  const url = new URL(request.url);
   const { deviceToken } = params;
-  const table = searchParams.get("table");
+  const table = url.searchParams.get("table");
 
   if (!deviceToken) {
     return new NextResponse("OK\n", { status: 200, headers: { "Content-Type": "text/plain" } });
   }
 
-  // Log everything for debugging
+  // Read raw body
   const bodyText = await request.text();
-  console.log(`[Biometric POST] table=${table}, url=${request.url}`);
+  const contentType = request.headers.get("content-type") || "";
+
+  // Log EVERYTHING to understand the device's protocol
+  console.log(`[Biometric POST] url=${url.toString()}`);
+  console.log(`[Biometric POST] content-type=${contentType}`);
+  console.log(`[Biometric POST] table=${table}`);
   console.log(`[Biometric POST] body=${bodyText}`);
 
   try {
     const result = await findDevice(deviceToken);
-
     if (!result) {
       return new NextResponse("OK\n", { status: 200, headers: { "Content-Type": "text/plain" } });
     }
@@ -131,17 +127,62 @@ export async function POST(request: NextRequest, { params }: { params: { deviceT
     const { deviceDoc, gymRef } = result;
     const deviceData = deviceDoc.data()!;
 
-    // Update lastSeen
     await deviceDoc.ref.update({ lastSeen: new Date() });
+
+    // Try to parse as JSON first (Realtime FkWeb JSON format)
+    let parsedJson: Record<string, string> | null = null;
+    try {
+      if (bodyText.trim().startsWith("{")) {
+        parsedJson = JSON.parse(bodyText);
+        console.log(`[Biometric POST] Parsed JSON:`, JSON.stringify(parsedJson));
+      }
+    } catch (_) { /* not JSON */ }
 
     // Handle CMD_REPLY (device confirming it processed a command)
     if (table === "CMD_REPLY" || bodyText.includes("CMD_REPLY")) {
-      console.log(`[Biometric] CMD_REPLY received from ${deviceData.serialNo}: ${bodyText}`);
+      console.log(`[Biometric POST] CMD_REPLY from ${deviceData.serialNo}`);
       return new NextResponse("OK\n", { status: 200, headers: { "Content-Type": "text/plain" } });
     }
 
-    // Process attendance data
-    if (table === "ATTLOG") {
+    // Handle attendance: JSON format {"fk_name":"...", "fk_time":"*YYYYMMDDHHMMSS", "fk_user":"PIN", ...}
+    if (parsedJson && (parsedJson.fk_time || parsedJson.fk_user)) {
+      console.log(`[Biometric POST] Processing JSON attendance record`);
+
+      const pin = parsedJson.fk_user || parsedJson.fk_name || "";
+      // fk_time format appears to be "*YYYYMMDDHHMMSS" or "YYYYMMDDHHMMSS"
+      const rawTime = (parsedJson.fk_time || "").replace(/^\*/, "");
+      const direction = deviceData.mode === "out" ? "out" : "in";
+
+      if (pin) {
+        const membersSnapshot = await gymRef
+          .collection("members")
+          .where("devicePin", "==", parseInt(pin))
+          .limit(1)
+          .get();
+
+        const memberId = membersSnapshot.empty ? "unknown" : membersSnapshot.docs[0].id;
+        const memberName = membersSnapshot.empty
+          ? "Unknown"
+          : membersSnapshot.docs[0].data().fullName || "Unknown";
+
+        await gymRef.collection("attendanceLogs").add({
+          deviceToken,
+          machineName: deviceData.machineName || "Unknown",
+          devicePin: pin,
+          memberId,
+          memberName,
+          timestamp: new Date(),
+          rawTime,
+          direction,
+          rawEntry: bodyText,
+        });
+        console.log(`[Biometric POST] Attendance logged for PIN=${pin}, member=${memberName}`);
+      }
+      return new NextResponse("OK\n", { status: 200, headers: { "Content-Type": "text/plain" } });
+    }
+
+    // Handle plain-text ATTLOG format (fallback)
+    if (table === "ATTLOG" && !parsedJson) {
       const lines = bodyText.split("\n").filter((line) => line.trim().length > 0);
       const batch = adminDb.batch();
       let hasWrites = false;
@@ -158,9 +199,8 @@ export async function POST(request: NextRequest, { params }: { params: { deviceT
           .get();
 
         const memberId = membersSnapshot.empty ? "unknown" : membersSnapshot.docs[0].id;
-        const memberName = membersSnapshot.empty
-          ? "Unknown"
-          : membersSnapshot.docs[0].data().fullName || membersSnapshot.docs[0].data().name || "Unknown";
+        const memberName = membersSnapshot.empty ? "Unknown"
+          : membersSnapshot.docs[0].data().fullName || "Unknown";
 
         const logRef = gymRef.collection("attendanceLogs").doc();
         batch.set(logRef, {
@@ -177,9 +217,7 @@ export async function POST(request: NextRequest, { params }: { params: { deviceT
         hasWrites = true;
       }
 
-      if (hasWrites) {
-        await batch.commit();
-      }
+      if (hasWrites) await batch.commit();
     }
 
     return new NextResponse("OK\n", {
@@ -187,7 +225,7 @@ export async function POST(request: NextRequest, { params }: { params: { deviceT
       headers: { "Content-Type": "text/plain" },
     });
   } catch (error) {
-    console.error(`Error in POST /api/biometric/${deviceToken}:`, error);
+    console.error(`[Biometric POST] Error for token ${deviceToken}:`, error);
     return new NextResponse("OK\n", { status: 200, headers: { "Content-Type": "text/plain" } });
   }
 }
