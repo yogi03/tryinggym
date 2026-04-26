@@ -98,29 +98,33 @@ async function migrate() {
           // Add updates to batch
           batch.update(memberDoc.ref, { devicePin });
 
-          const commandRef = gymDoc.ref.collection("deviceCommands").doc();
-          batch.set(commandRef, {
-            type: "CREATE_USER",
-            pin: formatPin(devicePin),
-            name: memberData.fullName || "Unknown",
-            validFrom: validFrom,
-            validTo: validTo,
-            status: "pending",
-            createdAt: FieldValue.serverTimestamp(),
-          });
+          const devicesSnap = await gymDoc.ref.collection("biometricDevices").get();
           
-          // Check if validTo is in the past
-          if (new Date(validTo) < new Date(today)) {
-            const updateCommandRef = gymDoc.ref.collection("deviceCommands").doc();
-            batch.set(updateCommandRef, {
-              type: "UPDATE_USER_VALIDITY",
+          devicesSnap.docs.forEach(deviceDoc => {
+            const commandRef = deviceDoc.ref.collection("deviceCommands").doc();
+            batch.set(commandRef, {
+              type: "CREATE_USER",
               pin: formatPin(devicePin),
+              name: memberData.fullName || "Unknown",
               validFrom: validFrom,
               validTo: validTo,
               status: "pending",
               createdAt: FieldValue.serverTimestamp(),
             });
-          }
+            
+            // Check if validTo is in the past
+            if (new Date(validTo) < new Date(today)) {
+              const updateCommandRef = deviceDoc.ref.collection("deviceCommands").doc();
+              batch.set(updateCommandRef, {
+                type: "UPDATE_USER_VALIDITY",
+                pin: formatPin(devicePin),
+                validFrom: validFrom,
+                validTo: validTo,
+                status: "pending",
+                createdAt: FieldValue.serverTimestamp(),
+              });
+            }
+          });
 
           gymMembersMigrated++;
         }

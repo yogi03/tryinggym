@@ -38,17 +38,23 @@ export const onMemberCreated = functions.firestore
         return newPin;
       });
 
-      // Queue CREATE_USER command
-      const commandRef = gymRef.collection("deviceCommands").doc();
-      await commandRef.set({
-        type: "CREATE_USER",
-        pin: formatPin(devicePin),
-        name: memberData.fullName || "Unknown",
-        validFrom: memberData.membershipStartDate?.split("T")[0] || new Date().toISOString().split("T")[0],
-        validTo: memberData.membershipEndDate?.split("T")[0] || new Date().toISOString().split("T")[0],
-        status: "pending",
-        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      const devicesSnap = await gymRef.collection("biometricDevices").get();
+      const batch = db.batch();
+
+      devicesSnap.docs.forEach((deviceDoc) => {
+        const commandRef = deviceDoc.ref.collection("deviceCommands").doc();
+        batch.set(commandRef, {
+          type: "CREATE_USER",
+          pin: formatPin(devicePin),
+          name: memberData.fullName || "Unknown",
+          validFrom: memberData.membershipStartDate?.split("T")[0] || new Date().toISOString().split("T")[0],
+          validTo: memberData.membershipEndDate?.split("T")[0] || new Date().toISOString().split("T")[0],
+          status: "pending",
+          createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
       });
+
+      await batch.commit();
 
     } catch (error) {
       console.error(`Error processing new member ${snap.id} in gym ${gymId}:`, error);
@@ -66,13 +72,20 @@ export const onMembershipUpdated = functions.firestore
     if (afterData.isArchived || !afterData.fullName) { // Using isArchived flag or if it was somehow physically deleted and this is a phantom update
       if (afterData.devicePin) {
         const gymRef = db.collection("gyms").doc(gymId);
-        const commandRef = gymRef.collection("deviceCommands").doc();
-        await commandRef.set({
-          type: "DELETE_USER",
-          pin: formatPin(afterData.devicePin),
-          status: "pending",
-          createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        const devicesSnap = await gymRef.collection("biometricDevices").get();
+        const batch = db.batch();
+
+        devicesSnap.docs.forEach((deviceDoc) => {
+          const commandRef = deviceDoc.ref.collection("deviceCommands").doc();
+          batch.set(commandRef, {
+            type: "DELETE_USER",
+            pin: formatPin(afterData.devicePin),
+            status: "pending",
+            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+          });
         });
+
+        await batch.commit();
       }
       return null;
     }
@@ -80,15 +93,22 @@ export const onMembershipUpdated = functions.firestore
     // Check if endDate changed
     if (beforeData.membershipEndDate !== afterData.membershipEndDate && afterData.devicePin) {
       const gymRef = db.collection("gyms").doc(gymId);
-      const commandRef = gymRef.collection("deviceCommands").doc();
-      await commandRef.set({
-        type: "UPDATE_USER_VALIDITY",
-        pin: formatPin(afterData.devicePin),
-        validFrom: afterData.membershipStartDate?.split("T")[0] || new Date().toISOString().split("T")[0],
-        validTo: afterData.membershipEndDate?.split("T")[0] || new Date().toISOString().split("T")[0],
-        status: "pending",
-        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      const devicesSnap = await gymRef.collection("biometricDevices").get();
+      const batch = db.batch();
+
+      devicesSnap.docs.forEach((deviceDoc) => {
+        const commandRef = deviceDoc.ref.collection("deviceCommands").doc();
+        batch.set(commandRef, {
+          type: "UPDATE_USER_VALIDITY",
+          pin: formatPin(afterData.devicePin),
+          validFrom: afterData.membershipStartDate?.split("T")[0] || new Date().toISOString().split("T")[0],
+          validTo: afterData.membershipEndDate?.split("T")[0] || new Date().toISOString().split("T")[0],
+          status: "pending",
+          createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
       });
+
+      await batch.commit();
     }
   });
 
@@ -100,13 +120,20 @@ export const onMemberDeleted = functions.firestore
 
     if (memberData.devicePin) {
       const gymRef = db.collection("gyms").doc(gymId);
-      const commandRef = gymRef.collection("deviceCommands").doc();
-      await commandRef.set({
-        type: "DELETE_USER",
-        pin: formatPin(memberData.devicePin),
-        status: "pending",
-        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      const devicesSnap = await gymRef.collection("biometricDevices").get();
+      const batch = db.batch();
+
+      devicesSnap.docs.forEach((deviceDoc) => {
+        const commandRef = deviceDoc.ref.collection("deviceCommands").doc();
+        batch.set(commandRef, {
+          type: "DELETE_USER",
+          pin: formatPin(memberData.devicePin),
+          status: "pending",
+          createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
       });
+
+      await batch.commit();
     }
   });
 
@@ -138,14 +165,17 @@ export const autoExpireMembers = functions.pubsub
           hasUpdates = true;
 
           if (memberData.devicePin) {
-            const commandRef = gymDoc.ref.collection("deviceCommands").doc();
-            batch.set(commandRef, {
-              type: "UPDATE_USER_VALIDITY",
-              pin: formatPin(memberData.devicePin),
-              validFrom: memberData.membershipStartDate?.split("T")[0] || yesterdayStr,
-              validTo: yesterdayStr,
-              status: "pending",
-              createdAt: admin.firestore.FieldValue.serverTimestamp(),
+            const devicesSnap = await gymDoc.ref.collection("biometricDevices").get();
+            devicesSnap.docs.forEach((deviceDoc) => {
+              const commandRef = deviceDoc.ref.collection("deviceCommands").doc();
+              batch.set(commandRef, {
+                type: "UPDATE_USER_VALIDITY",
+                pin: formatPin(memberData.devicePin),
+                validFrom: memberData.membershipStartDate?.split("T")[0] || yesterdayStr,
+                validTo: yesterdayStr,
+                status: "pending",
+                createdAt: admin.firestore.FieldValue.serverTimestamp(),
+              });
             });
           }
         }

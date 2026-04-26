@@ -112,15 +112,14 @@ service cloud.firestore {
       allow read, write: if canAccessGym(gymId);
     }
 
-    // Devices: Nested under gyms
-    match /gyms/{gymId}/devices/{deviceId} {
-      allow read: if canAccessGym(gymId);
-      allow write: if false;
-    }
-
-    // Device Commands: Nested under gyms
-    match /gyms/{gymId}/deviceCommands/{commandId} {
+    // Biometric Devices: Nested under gyms
+    match /gyms/{gymId}/biometricDevices/{deviceId} {
       allow read, write: if canAccessGym(gymId);
+      
+      // Nested device commands
+      match /deviceCommands/{commandId} {
+        allow read, write: if canAccessGym(gymId);
+      }
     }
 
     // Attendance Logs: Nested under gyms
