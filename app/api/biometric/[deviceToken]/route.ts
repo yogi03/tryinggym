@@ -4,7 +4,6 @@ import { parseAttlogLine } from "@/lib/devicePin";
 
 async function findDevice(deviceToken: string) {
   const db = adminDb;
-  // Use top-level lookup doc — no index required
   const lookupDoc = await db.collection("biometricTokens").doc(deviceToken).get();
   if (!lookupDoc.exists) return null;
 
@@ -13,6 +12,12 @@ async function findDevice(deviceToken: string) {
   if (!deviceDoc.exists) return null;
 
   return { gymId, deviceId, deviceDoc, gymRef: db.collection("gyms").doc(gymId) };
+}
+
+// Convert YYYY-MM-DD to YYYYMMDD (required by Realtime FkWeb protocol)
+function toDeviceDate(dateStr: string): string {
+  if (!dateStr) return "";
+  return dateStr.replace(/-/g, "");
 }
 
 export async function GET(request: NextRequest, { params }: { params: { deviceToken: string } }) {
@@ -48,38 +53,50 @@ export async function GET(request: NextRequest, { params }: { params: { deviceTo
 
         commandsSnapshot.docs.forEach((doc) => {
           const cmd = doc.data();
-          const uniqueCmdId = `${Math.floor(Date.now() / 1000)}${cmdCounter++}`;
+          const uniqueCmdId = `${Math.floor(Date.now() / 1000)}${String(cmdCounter++).padStart(4, "0")}`;
+
+          // PIN must be plain integer (no zero-padding) for Realtime FkWeb
+          const pin = parseInt(String(cmd.pin), 10);
+          // Dates must be YYYYMMDD format (no dashes)
+          const validFrom = toDeviceDate(cmd.validFrom || "");
+          const validTo = toDeviceDate(cmd.validTo || "");
 
           if (cmd.type === "CREATE_USER") {
-            commandsText += `C:${uniqueCmdId}:DATA UPDATE USERINFO PIN=${cmd.pin}\tName=${cmd.name || ""}\tPri=0\tValidFrom=${cmd.validFrom || ""}\tValidTo=${cmd.validTo || ""}\n`;
+            commandsText += `C:${uniqueCmdId}:DATA UPDATE USERINFO PIN=${pin}\tName=${cmd.name || ""}\tPri=0\tValidFrom=${validFrom}\tValidTo=${validTo}\n`;
           } else if (cmd.type === "UPDATE_USER_VALIDITY") {
-            commandsText += `C:${uniqueCmdId}:DATA UPDATE USERINFO PIN=${cmd.pin}\tValidFrom=${cmd.validFrom || ""}\tValidTo=${cmd.validTo || ""}\n`;
+            commandsText += `C:${uniqueCmdId}:DATA UPDATE USERINFO PIN=${pin}\tValidFrom=${validFrom}\tValidTo=${validTo}\n`;
           } else if (cmd.type === "DELETE_USER") {
-            commandsText += `C:${uniqueCmdId}:DATA DELETE USERINFO PIN=${cmd.pin}\n`;
+            commandsText += `C:${uniqueCmdId}:DATA DELETE USERINFO PIN=${pin}\n`;
           }
 
           cmdBatch.update(doc.ref, { status: "sent", sentAt: new Date() });
         });
 
         await cmdBatch.commit();
+        console.log(`[Biometric] Sent ${commandsSnapshot.size} commands to device ${serialNo}`);
+        console.log(`[Biometric] Commands:\n${commandsText}`);
       }
     }
   } catch (error) {
     console.error(`Error in GET /api/biometric/${deviceToken}:`, error);
   }
 
-  let responseText = `GET OPTION FROM: ${serialNo}
-ATTLOGStamp=None
-OPERLOGStamp=9999
-ATTPHOTOStamp=None
-ErrorDelay=30
-Delay=10
-TransTimes=00:00;14:05
-TransInterval=1
-TransFlag=TransData AttLog
-Realtime=1
-Encrypt=None`;
+  // Response format: options first, then commands
+  const responseLines = [
+    `GET OPTION FROM: ${serialNo}`,
+    `ATTLOGStamp=None`,
+    `OPERLOGStamp=9999`,
+    `ATTPHOTOStamp=None`,
+    `ErrorDelay=30`,
+    `Delay=10`,
+    `TransTimes=00:00;14:05`,
+    `TransInterval=1`,
+    `TransFlag=TransData AttLog`,
+    `Realtime=1`,
+    `Encrypt=None`,
+  ];
 
+  let responseText = responseLines.join("\n");
   if (commandsText) {
     responseText += "\n" + commandsText;
   }
@@ -99,6 +116,11 @@ export async function POST(request: NextRequest, { params }: { params: { deviceT
     return new NextResponse("OK\n", { status: 200, headers: { "Content-Type": "text/plain" } });
   }
 
+  // Log everything for debugging
+  const bodyText = await request.text();
+  console.log(`[Biometric POST] table=${table}, url=${request.url}`);
+  console.log(`[Biometric POST] body=${bodyText}`);
+
   try {
     const result = await findDevice(deviceToken);
 
@@ -112,21 +134,23 @@ export async function POST(request: NextRequest, { params }: { params: { deviceT
     // Update lastSeen
     await deviceDoc.ref.update({ lastSeen: new Date() });
 
-    // Process attendance data if provided
-    if (table === "ATTLOG") {
-      const bodyText = await request.text();
-      const lines = bodyText.split("\n").filter((line) => line.trim().length > 0);
+    // Handle CMD_REPLY (device confirming it processed a command)
+    if (table === "CMD_REPLY" || bodyText.includes("CMD_REPLY")) {
+      console.log(`[Biometric] CMD_REPLY received from ${deviceData.serialNo}: ${bodyText}`);
+      return new NextResponse("OK\n", { status: 200, headers: { "Content-Type": "text/plain" } });
+    }
 
+    // Process attendance data
+    if (table === "ATTLOG") {
+      const lines = bodyText.split("\n").filter((line) => line.trim().length > 0);
       const batch = adminDb.batch();
       let hasWrites = false;
-
       const direction = deviceData.mode === "out" ? "out" : "in";
 
       for (const line of lines) {
         const parsed = parseAttlogLine(line);
         if (!parsed) continue;
 
-        // Find member by devicePin
         const membersSnapshot = await gymRef
           .collection("members")
           .where("devicePin", "==", parseInt(parsed.pin))
