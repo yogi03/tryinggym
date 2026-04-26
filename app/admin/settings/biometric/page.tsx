@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useAuth } from "@/lib/auth/auth-context";
 import { db } from "@/lib/firebase/config";
-import { collection, doc, getDocs, setDoc, deleteDoc, Timestamp } from "firebase/firestore";
+import { collection, doc, getDocs, setDoc, deleteDoc, Timestamp, writeBatch } from "firebase/firestore";
 import AdminSidebar from "@/components/admin/Sidebar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -112,7 +112,14 @@ export default function BiometricSettingsPage() {
         createdAt: Timestamp.now(),
       };
 
-      await setDoc(doc(db, "gyms", adminData.gymId, "biometricDevices", newDeviceId), newDeviceData);
+      // Batch: write device + top-level lookup (no index needed)
+      const batch = writeBatch(db);
+      batch.set(doc(db, "gyms", adminData.gymId, "biometricDevices", newDeviceId), newDeviceData);
+      batch.set(doc(db, "biometricTokens", deviceToken), {
+        gymId: adminData.gymId,
+        deviceId: newDeviceId,
+      });
+      await batch.commit();
       
       toast({ title: "Success", description: "Biometric device added successfully." });
       setShowAddModal(false);
@@ -135,12 +142,17 @@ export default function BiometricSettingsPage() {
     }
   };
 
-  const handleDelete = async (deviceId: string) => {
+  const handleDelete = async (deviceId: string, deviceToken?: string) => {
     if (!adminData?.gymId) return;
     if (!confirm("Are you sure you want to delete this device?")) return;
 
     try {
-      await deleteDoc(doc(db, "gyms", adminData.gymId, "biometricDevices", deviceId));
+      const batch = writeBatch(db);
+      batch.delete(doc(db, "gyms", adminData.gymId, "biometricDevices", deviceId));
+      if (deviceToken) {
+        batch.delete(doc(db, "biometricTokens", deviceToken));
+      }
+      await batch.commit();
       toast({ title: "Deleted", description: "Device removed successfully." });
       fetchDevices();
     } catch (error) {
@@ -243,7 +255,7 @@ export default function BiometricSettingsPage() {
                           <p className="text-muted-foreground">Mode: <span className="text-white capitalize">{device.mode === 'both' ? 'In & Out' : device.mode}</span></p>
                           <p className="text-muted-foreground mt-1">Last Seen: <span className="text-white">{device.lastSeen ? device.lastSeen.toDate().toLocaleString() : 'Never'}</span></p>
                         </div>
-                        <Button variant="destructive" size="sm" onClick={() => handleDelete(device.id)}>
+                        <Button variant="destructive" size="sm" onClick={() => handleDelete(device.id, device.deviceToken)}>
                           <Trash2 className="h-4 w-4 mr-2" /> Delete
                         </Button>
                       </div>
@@ -321,7 +333,7 @@ export default function BiometricSettingsPage() {
               </div>
               <div className="space-y-2">
                 <Label>Timezone</Label>
-                <Select value={formData.timezone} onValueChange={(val) => setFormData({ ...formData, timezone: val })}>
+                <Select value={formData.timezone} onValueChange={(val) => setFormData({ ...formData, timezone: val || "Asia/Kolkata" })}>
                   <SelectTrigger>
                     <SelectValue />
                   </SelectTrigger>

@@ -122,6 +122,11 @@ service cloud.firestore {
       }
     }
 
+    // Top-level token lookup map (deviceToken -> gymId/deviceId)
+    match /biometricTokens/{tokenId} {
+      allow read, write: if signedIn();
+    }
+
     // Attendance Logs: Nested under gyms
     match /gyms/{gymId}/attendanceLogs/{logId} {
       allow read: if canAccessGym(gymId);

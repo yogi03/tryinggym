@@ -59,6 +59,7 @@ export const onMemberCreated = functions.firestore
     } catch (error) {
       console.error(`Error processing new member ${snap.id} in gym ${gymId}:`, error);
     }
+    return null;
   });
 
 export const onMembershipUpdated = functions.firestore
