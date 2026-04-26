@@ -227,7 +227,46 @@ export async function POST(request: NextRequest, { params }: { params: { deviceT
       if (hasWrites) await batch.commit();
     }
 
-    return new NextResponse("OK\n", {
+    // Fetch commands for this device (if any)
+    let commandsText = "";
+    const commandsSnapshot = await deviceDoc.ref
+      .collection("deviceCommands")
+      .where("status", "==", "pending")
+      .get();
+
+    if (!commandsSnapshot.empty) {
+      const cmdBatch = adminDb.batch();
+      let cmdCounter = 1;
+
+      commandsSnapshot.docs.forEach((doc) => {
+        const cmd = doc.data();
+        const uniqueCmdId = `${Math.floor(Date.now() / 1000)}${String(cmdCounter++).padStart(4, "0")}`;
+
+        const pin = parseInt(String(cmd.pin), 10);
+        const validFrom = cmd.validFrom || "";
+        const validTo = cmd.validTo || "";
+
+        if (cmd.type === "CREATE_USER") {
+          commandsText += `C:${uniqueCmdId}:DATA UPDATE USERINFO PIN=${pin}\tName=${cmd.name || ""}\tPri=0\tValidFrom=${validFrom}\tValidTo=${validTo}\n`;
+        } else if (cmd.type === "UPDATE_USER_VALIDITY") {
+          commandsText += `C:${uniqueCmdId}:DATA UPDATE USERINFO PIN=${pin}\tValidFrom=${validFrom}\tValidTo=${validTo}\n`;
+        } else if (cmd.type === "DELETE_USER") {
+          commandsText += `C:${uniqueCmdId}:DATA DELETE USERINFO PIN=${pin}\n`;
+        }
+
+        cmdBatch.update(doc.ref, { status: "sent", sentAt: new Date() });
+      });
+
+      await cmdBatch.commit();
+      console.log(`[Biometric POST] Sent ${commandsSnapshot.size} commands to device ${deviceData.serialNo}`);
+    }
+
+    let responseText = "OK\n";
+    if (commandsText) {
+      responseText += commandsText;
+    }
+
+    return new NextResponse(responseText, {
       status: 200,
       headers: { "Content-Type": "text/plain" },
     });
